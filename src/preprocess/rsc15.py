@@ -28,7 +28,8 @@ notes = 'Final GRU Model'
 #Hyperparameters
 
 # 512 - Number of sequences running through the network in one pass.
-batch_size = 512
+# batch_size = 512
+batch_size = 2
 
 # 50 - Embedding dimensions
 embed_dim = 300
@@ -114,7 +115,7 @@ else:
 
 prepared_data_path = "../../data/rsc15/prepared/"
 
-tr_data = load_our_data(path=f"{prepared_data_path}yoochoose-clicks-100k_train_full.txt", limit=limit)
+tr_data = load_our_data(path=f"{prepared_data_path}yoochoose-clicks-100k_train_full1.txt", limit=limit)
 va_data = load_our_data(path=f"{prepared_data_path}yoochoose-clicks-100k_train_valid.txt", limit=validation_limit)
 te_data = load_our_data(path=f"{prepared_data_path}yoochoose-clicks-100k_test.txt", limit=testing_limit)
 
@@ -155,7 +156,7 @@ tr_data.sort_values([session_key, time_key], inplace=True)
 print(tr_data)
 
 
-def drop_single_timestep_sessions(data):
+def filter_rare_clicked_items(data):
     
     ''' Sessions with a single timestep (one event) are dropped 
     as it is not possible to train a model on inputs with no targets '''
@@ -164,11 +165,112 @@ def drop_single_timestep_sessions(data):
     
     return data
 
-def delete_rare_clicked_items(data):
-    #delete records of items which appeared less than 5 times
-    itemLen = data.groupby('ItemID').size() #groupby itemID and get size of each item
-    data = data[np.in1d(train.ItemID, itemLen[itemLen > 4].index)]
+def filter_single_timestep_sessions(data):
     
-    return data
+    ''' Sessions with a single timestep (one event) are dropped 
+    as it is not possible to train a model on inputs with no targets '''
+    session_lengths = data.groupby('SessionId').size()
+    data = data[np.in1d(data.SessionId, session_lengths[session_lengths>1].index)]
+    
+    return data 
 
-tr_data = drop_single_timestep_sessions(tr_data)
+
+def get_click_offset(df):
+    """
+    df[session_key] return a set of session_key
+    df[session_key].nunique() return the size of session_key set (int)
+    df.groupby(session_key).size() return the size of each session_id
+    df.groupby(session_key).size().cumsum() retunn cumulative sum
+    """
+    offsets = np.zeros(df[session_key].nunique() + 1, dtype=np.int32)
+    offsets[1:] = df.groupby(session_key).size().cumsum()
+    return offsets
+
+def order_session_idx(df):
+    """ Order the session indices """
+    time_sort = False
+    if time_sort:
+        # starting time for each sessions, sorted by session IDs
+        sessions_start_time = df.groupby(session_key)[time_key].min().values
+        # order the session indices by session starting times
+        session_idx_arr = np.argsort(sessions_start_time)
+    else:
+        session_idx_arr = np.arange(df[session_key].nunique())
+
+    return session_idx_arr
+
+
+# tr_data = filter_rare_clicked_items(tr_data)
+# tr_data = filter_single_timestep_sessions(tr_data)
+
+
+def get_inputs_targets(data):
+    itemids = data[item_key].unique()
+    # uniques = np.unique(np.append(np.append(data['ItemId'])))
+    items_to_int, int_to_items = create_lookup_tables(list(itemids))
+    
+    data_items = items_to_int.values
+    
+    offset_sessions = get_click_offset(data)
+    session_idx_arr = order_session_idx(data)
+    
+    iters = np.arange(batch_size)
+    maxiter = iters.max()
+    start = offset_sessions[session_idx_arr[iters]]
+    end = offset_sessions[session_idx_arr[iters]+1]
+    finished = False
+    while not finished:
+        session_lengths = end-start
+        minlen = (session_lengths).min()
+        
+        # Item indices (for embedding) for clicks where the first sessions start
+        out_idx = data_items[start]
+        for i in range(minlen-1):
+            in_idx = out_idx
+            out_idx = data_items[start+i+1]
+            # if self.n_sample:
+                # if sample_store:
+                #     if sample_pointer == generate_length:
+                #         neg_samples = self.generate_neg_samples(pop, generate_length)
+                #         sample_pointer = 0
+                #         sample = neg_samples[sample_pointer]
+                #         sample_pointer += 1
+                #     else:
+                #         sample = self.generate_neg_samples(pop, 1)
+                #     y = np.hstack([out_idx, sample])
+                # else:
+            y = out_idx
+                    # if self.n_sample:
+                    #     if sample_pointer == generate_length:
+                    #         generate_samples()
+                    #         sample_pointer = 0
+                    #     sample_pointer += 1
+            reset = (start+i+1 == end-1)
+            
+            start = start+minlen-1
+            finished_mask = (end-start<=1)
+            n_finished = finished_mask.sum()
+            iters[finished_mask] = maxiter + np.arange(1,n_finished+1)
+            maxiter += n_finished
+            valid_mask = (iters < len(offset_sessions)-1)
+            n_valid = valid_mask.sum()
+            if (n_valid == 0) or (n_valid < 2):
+                finished = True
+                break
+            mask = finished_mask & valid_mask
+            sessions = session_idx_arr[iters[mask]]
+            start[mask] = offset_sessions[sessions]
+            end[mask] = offset_sessions[sessions+1]
+            iters = iters[valid_mask]
+            start = start[valid_mask]
+            end = end[valid_mask]
+            # if n_valid < len(valid_mask):
+            #     for i in range(len(self.H)):
+            #         tmp = self.H[i].get_value(borrow=True)
+            #         tmp = tmp[valid_mask]
+            #         self.H[i].set_value(tmp, borrow=True)
+
+
+
+
+get_inputs_targets(tr_data)

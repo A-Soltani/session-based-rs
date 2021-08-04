@@ -1,0 +1,16 @@
+model number: 1027
+name: recsys
+
+limit: None
+batch_size: 512
+embed_dim: 300
+x_drop_probability: 0.0
+rnn_keep_probability: 1.0
+rnn_size: 200
+num_layers: 1
+learning_rate: 0.0025
+num_epochs: 50
+show_every_n_batches: 3000
+top_k: 20
+full_validation_stats: False
+notes: Final GRU Model
